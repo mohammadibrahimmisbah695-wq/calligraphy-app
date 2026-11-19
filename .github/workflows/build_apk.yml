@@ -28,7 +28,7 @@ jobs:
       - name: Create Flutter project structure
         run: flutter create --org com.example --project-name calligraphy_app .
 
-      - name: Add our dependencies and code
+      - name: Update pubspec.yaml
         run: |
           cat << 'EOF' > pubspec.yaml
           name: calligraphy_app
@@ -44,7 +44,6 @@ jobs:
               sdk: flutter
             image_picker: ^1.1.2
             image: ^4.2.0
-            super_clipboard: ^0.8.24
             path_provider: ^2.1.4
 
           dev_dependencies:
@@ -55,15 +54,17 @@ jobs:
             uses-material-design: true
           EOF
 
+      - name: Update lib/main.dart
+        run: |
           cat << 'EOF' > lib/main.dart
           import 'dart:io';
           import 'dart:typed_data';
           import 'dart:ui' as ui;
           import 'package:flutter/material.dart';
           import 'package:flutter/rendering.dart';
+          import 'package:flutter/services.dart';
           import 'package:image_picker/image_picker.dart';
           import 'package:image/image.dart' as img;
-          import 'package:super_clipboard/super_clipboard.dart';
           import 'package:path_provider/path_provider.dart';
 
           void main() {
@@ -95,6 +96,9 @@ jobs:
           }
 
           class _CalligraphyHomeScreenState extends State<CalligraphyHomeScreen> {
+            static const MethodChannel _channel =
+                MethodChannel('com.example.calligraphy_app/clipboard');
+
             final TextEditingController _textController = TextEditingController(
               text: 'رکن الدین بیبرس',
             );
@@ -144,7 +148,7 @@ jobs:
               }
             }
 
-          Future<Uint8List?> _captureTextAsPng() async {
+            Future<Uint8List?> _captureTextAsPng() async {
               try {
                 final boundary =
                     _textCaptureKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
@@ -171,22 +175,13 @@ jobs:
                   return;
                 }
 
-                final clipboard = SystemClipboard.instance;
-                if (clipboard == null) {
-                  _showMessage('اس ڈیوائس پر کلپ بورڈ دستیاب نہیں ہے');
-                  return;
-                }
-
                 final tempDir = await getTemporaryDirectory();
                 final file = File(
                   '${tempDir.path}/calligraphy_${DateTime.now().millisecondsSinceEpoch}.png',
                 );
                 await file.writeAsBytes(bytes);
 
-                final item = DataWriterItem();
-                item.add(Formats.png(bytes));
-
-                await clipboard.write([item]);
+                await _channel.invokeMethod('copyImagePath', {'path': file.path});
                 _showMessage('تصویر اصل سائز میں کلپ بورڈ پر کاپی ہو گئی ہے! اب پیسٹ کریں');
               } catch (e) {
                 _showMessage('کاپی کرتے وقت مسئلہ آیا: $e');
@@ -305,6 +300,79 @@ jobs:
             }
           }
           EOF
+
+      - name: Add Android Clipboard handler
+        run: |
+          cat << 'EOF' > android/app/src/main/kotlin/com/example/calligraphy_app/MainActivity.kt
+          package com.example.calligraphy_app
+
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
+          import androidx.core.content.FileProvider
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+          import java.io.File
+
+          class MainActivity : FlutterActivity() {
+              private val CHANNEL = "com.example.calligraphy_app/clipboard"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+                      if (call.method == "copyImagePath") {
+                          val path = call.argument<String>("path")
+                          if (path != null) {
+                              val file = File(path)
+                              val uri = FileProvider.getUriForFile(
+                                  this,
+                                  "${applicationContext.packageName}.fileprovider",
+                                  file
+                              )
+                              val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                              val clip = ClipData.newUri(contentResolver, "Calligraphy Image", uri)
+                              clipboard.setPrimaryClip(clip)
+                              result.success(true)
+                          } else {
+                              result.error("INVALID_PATH", "Path is null", null)
+                          }
+                      } else {
+                          result.notImplemented()
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > android/app/src/main/res/xml/file_paths.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths xmlns:android="http://schemas.android.com/apk/res/android">
+              <cache-path name="cache" path="." />
+              <external-cache-path name="external_cache" path="." />
+          </paths>
+          EOF
+
+          python3 -c '
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path, "r") as f:
+              content = f.read()
+          provider = """
+              <provider
+                  android:name="androidx.core.content.FileProvider"
+                  android:authorities="${applicationId}.fileprovider"
+                  android:exported="false"
+                  android:grantUriPermissions="true">
+                  <meta-data
+                      android:name="android.support.FILE_PROVIDER_PATHS"
+                      android:resource="@xml/file_paths" />
+              </provider>
+          """
+          if "androidx.core.content.FileProvider" not in content:
+              content = content.replace("</application>", provider + "\n    </application>")
+              with open(path, "w") as f:
+                  f.write(content)
+          '
 
       - name: Install dependencies
         run: flutter pub get
