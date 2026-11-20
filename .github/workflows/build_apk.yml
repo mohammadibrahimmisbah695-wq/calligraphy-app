@@ -303,6 +303,9 @@ jobs:
 
       - name: Add Android Clipboard handler
         run: |
+          mkdir -p android/app/src/main/kotlin/com/example/calligraphy_app
+          mkdir -p android/app/src/main/res/xml
+
           cat << 'EOF' > android/app/src/main/kotlin/com/example/calligraphy_app/MainActivity.kt
           package com.example.calligraphy_app
 
